@@ -1,9 +1,41 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity,
+  AlertCircle,
+  BarChart3,
+  CheckCircle2,
+  CircleUserRound,
+  Clock3,
+  HeartPulse,
+  Home,
+  Menu,
+  Mic,
+  MicOff,
+  MoveUp,
+  Phone,
+  ShieldCheck,
+  Stethoscope,
+  Users,
+  X,
+  ChevronRight,
+  Siren,
+} from "lucide-react";
+
 import "./App.css";
 
 const API_URL = "http://127.0.0.1:5000";
 
-const emptyAnswers = {
+const VIDEO_URL =
+  "https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260715_082433_69699cf8-444b-4484-93cc-053e57896dfd.mp4";
+
+const AVATARS = [
+  "https://images.pexels.com/photos/774909/pexels-photo-774909.jpeg?auto=compress&cs=tinysrgb&w=100",
+  "https://images.pexels.com/photos/1222271/pexels-photo-1222271.jpeg?auto=compress&cs=tinysrgb&w=100",
+  "https://images.pexels.com/photos/1239291/pexels-photo-1239291.jpeg?auto=compress&cs=tinysrgb&w=100",
+  "https://images.pexels.com/photos/697509/pexels-photo-697509.jpeg?auto=compress&cs=tinysrgb&w=100",
+];
+
+const EMPTY_ANSWERS = {
   duration: "",
   worsening: "",
   breathing: "",
@@ -13,42 +45,118 @@ const emptyAnswers = {
 };
 
 function App() {
-  const [page, setPage] = useState("triage");
+  const [page, setPage] = useState("home");
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const [language, setLanguage] = useState("English");
   const [symptoms, setSymptoms] = useState("");
-  const [answers, setAnswers] = useState(emptyAnswers);
+  const [answers, setAnswers] = useState(EMPTY_ANSWERS);
 
   const [triageResult, setTriageResult] = useState(null);
-  const [selectedPatient, setSelectedPatient] = useState(null);
-
-  const [patients, setPatients] = useState([]);
-  const [analytics, setAnalytics] = useState(null);
-
   const [loading, setLoading] = useState(false);
-  const [queueLoading, setQueueLoading] = useState(false);
-
   const [error, setError] = useState("");
 
-  const [listening, setListening] = useState(false);
-  const [voiceSupported, setVoiceSupported] = useState(true);
-  const [voiceStatus, setVoiceStatus] = useState(
-    "Tap the microphone and describe the patient's problem"
-  );
+  const [queue, setQueue] = useState([]);
+  const [analytics, setAnalytics] = useState(null);
+
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef(null);
 
   useEffect(() => {
-    const SpeechRecognition =
-      window.SpeechRecognition ||
-      window.webkitSpeechRecognition;
+    if ("webkitSpeechRecognition" in window || "SpeechRecognition" in window) {
+      const SpeechRecognition =
+        window.SpeechRecognition || window.webkitSpeechRecognition;
 
-    if (!SpeechRecognition) {
-      setVoiceSupported(false);
+      const recognition = new SpeechRecognition();
+
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+
+      recognition.onresult = (event) => {
+        const transcript = event.results?.[0]?.[0]?.transcript || "";
+
+        if (transcript.trim()) {
+          setSymptoms((prev) => {
+            const clean = prev.trim();
+
+            if (!clean) return transcript.trim();
+
+            return `${clean} ${transcript.trim()}`;
+          });
+        }
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+
+      recognition.onerror = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = recognition;
     }
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
   }, []);
 
-  /* =========================================================
-     ANSWERS
-  ========================================================= */
+  const startVoiceInput = () => {
+    if (!recognitionRef.current) {
+      setError(
+        "Speech recognition is not supported in this browser. Please use Chrome or enter your symptoms manually."
+      );
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+      return;
+    }
+
+    const languageMap = {
+      English: "en-IN",
+      Tamil: "ta-IN",
+      Hindi: "hi-IN",
+    };
+
+    recognitionRef.current.lang = languageMap[language] || "en-IN";
+
+    try {
+      setError("");
+      setIsListening(true);
+      recognitionRef.current.start();
+    } catch {
+      setIsListening(false);
+    }
+  };
+
+  const navigate = (destination) => {
+    setMenuOpen(false);
+
+    if (destination === "home") {
+      setPage("home");
+    }
+
+    if (destination === "triage") {
+      setPage("triage");
+    }
+
+    if (destination === "queue") {
+      setPage("queue");
+      loadQueue();
+    }
+
+    if (destination === "analytics") {
+      setPage("analytics");
+      loadAnalytics();
+    }
+  };
 
   const handleAnswer = (field, value) => {
     setAnswers((previous) => ({
@@ -56,1388 +164,475 @@ function App() {
       [field]: value,
     }));
   };
-  /* =========================================================
-     VOICE
-  ========================================================= */
-
-  const getSpeechLanguage = () => {
-    if (language === "Tamil") return "ta-IN";
-    if (language === "Hindi") return "hi-IN";
-    return "en-IN";
-  };
-
-  const startVoiceInput = () => {
-    if (!voiceSupported) {
-      setVoiceStatus(
-        "Voice input is not supported. Please use Google Chrome."
-      );
-      return;
-    }
-
-    if (listening) return;
-
-    const SpeechRecognition =
-      window.SpeechRecognition ||
-      window.webkitSpeechRecognition;
-
-    const recognition = new SpeechRecognition();
-
-    recognition.lang = getSpeechLanguage();
-
-    // IMPORTANT FIX
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-
-    setListening(true);
-
-    setVoiceStatus(
-      `Listening in ${language}... Speak clearly.`
-    );
-
-    recognition.onresult = (event) => {
-      if (!event.results || !event.results[0]) {
-        return;
-      }
-
-      const transcript =
-        event.results[0][0].transcript.trim();
-
-      if (transcript) {
-        // Replace the text once.
-        // Do NOT append recognition results.
-        setSymptoms(transcript);
-      }
-    };
-
-    recognition.onerror = (event) => {
-      console.error("Speech error:", event.error);
-
-      if (event.error === "not-allowed") {
-        setVoiceStatus(
-          "Microphone permission was denied."
-        );
-      } else if (event.error === "no-speech") {
-        setVoiceStatus(
-          "No speech detected. Please try again."
-        );
-      } else {
-        setVoiceStatus(
-          "Voice input failed. Please try again."
-        );
-      }
-
-      setListening(false);
-    };
-
-    recognition.onend = () => {
-      setListening(false);
-
-      setVoiceStatus(
-        "Voice captured. You can edit the text before submitting."
-      );
-    };
-
-    try {
-      recognition.start();
-    } catch (error) {
-      console.error("Speech start error:", error);
-      setListening(false);
-
-      setVoiceStatus(
-        "Voice input could not be started. Please try again."
-      );
-    }
-  };
-  /* =========================================================
-     TRIAGE
-  ========================================================= */
 
   const handleSubmit = async (event) => {
     event.preventDefault();
-
-    if (!symptoms.trim()) {
-      setError(
-        "Please describe the patient's main problem."
-      );
-      return;
-    }
 
     setLoading(true);
     setError("");
     setTriageResult(null);
 
     try {
-      const response = await fetch(
-        `${API_URL}/api/triage`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            language,
-            symptoms,
-            answers,
-          }),
-        }
-      );
+      const response = await fetch(`${API_URL}/api/triage`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          language,
+          symptoms,
+          answers,
+        }),
+      });
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(
-          data.detail ||
-          `Server returned ${response.status}`
-        );
+        throw new Error(data.message || "Triage request failed");
       }
 
       setTriageResult(data);
-
-      await loadQueue();
-
-      setPage("result");
-    } catch (error) {
-      console.error(error);
+    } catch (err) {
+      console.error(err);
 
       setError(
-        "Unable to connect to LifeLine safety engine. Make sure the backend is running."
+        "Unable to connect to the LifeLine safety engine. Make sure the Flask backend is running on port 5000."
       );
     } finally {
       setLoading(false);
     }
   };
 
-  /* =========================================================
-     QUEUE
-  ========================================================= */
+  const startNewAssessment = () => {
+    setSymptoms("");
+    setAnswers(EMPTY_ANSWERS);
+    setTriageResult(null);
+    setError("");
+    setPage("triage");
+  };
 
   const loadQueue = async () => {
-    setQueueLoading(true);
-
     try {
-      const response = await fetch(
-        `${API_URL}/api/patients`
-      );
-
+      const response = await fetch(`${API_URL}/api/queue`);
       const data = await response.json();
 
       if (response.ok) {
-        setPatients(data.patients || []);
+        setQueue(data.queue || []);
       }
-    } catch (error) {
-      console.error("Queue error:", error);
-    } finally {
-      setQueueLoading(false);
+    } catch (err) {
+      console.error("Queue error:", err);
     }
   };
 
-  const openQueue = async () => {
-    setPage("queue");
-
-    await loadQueue();
-  };
-
-  /* =========================================================
-     ANALYTICS
-  ========================================================= */
-
   const loadAnalytics = async () => {
     try {
-      const response = await fetch(
-        `${API_URL}/api/analytics`
-      );
-
+      const response = await fetch(`${API_URL}/api/analytics`);
       const data = await response.json();
 
       if (response.ok) {
         setAnalytics(data);
       }
-    } catch (error) {
-      console.error("Analytics error:", error);
+    } catch (err) {
+      console.error("Analytics error:", err);
     }
   };
 
-  const openAnalytics = async () => {
-    setPage("analytics");
-
-    await loadAnalytics();
-  };
-
-  /* =========================================================
-     PATIENT DETAILS
-  ========================================================= */
-
-  const openPatient = (patient) => {
-    setSelectedPatient(patient);
-    setPage("patient");
-  };
-
-  /* =========================================================
-     DOCTOR OVERRIDE
-  ========================================================= */
-
-  const overridePriority = async (patientId, priority) => {
-    try {
-      const response = await fetch(
-        `${API_URL}/api/patients/${patientId}/priority`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            priority,
-            reason:
-              "Doctor reviewed and manually adjusted triage priority.",
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error("Unable to update priority");
-      }
-
-      const updated = await response.json();
-
-      setSelectedPatient(updated.patient);
-
-      await loadQueue();
-      await loadAnalytics();
-    } catch (error) {
-      console.error(error);
-      alert("Unable to update patient priority.");
-    }
-  };
-
-  /* =========================================================
-     PATIENT STATUS
-  ========================================================= */
-
-  const updatePatientStatus = async (
-    patientId,
-    status
-  ) => {
-    try {
-      const response = await fetch(
-        `${API_URL}/api/patients/${patientId}/status`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            status,
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error("Unable to update status");
-      }
-
-      const updated = await response.json();
-
-      setSelectedPatient(updated.patient);
-
-      await loadQueue();
-      await loadAnalytics();
-    } catch (error) {
-      console.error(error);
-      alert("Unable to update patient status.");
-    }
-  };
-
-  /* =========================================================
-     SECOND LOOK
-  ========================================================= */
-
-  const secondLook = async (patientId) => {
-    try {
-      const response = await fetch(
-        `${API_URL}/api/patients/${patientId}/second-look`,
-        {
-          method: "POST",
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.detail || "Second-look failed"
-        );
-      }
-
-      setSelectedPatient(data.patient);
-
-      await loadQueue();
-      await loadAnalytics();
-
-      alert(
-        data.message ||
-        "Second-look assessment completed."
-      );
-    } catch (error) {
-      console.error(error);
-      alert(
-        "Unable to perform second-look assessment."
-      );
-    }
-  };
-
-  /* =========================================================
-     NEW ASSESSMENT
-  ========================================================= */
-
-  const startNewAssessment = () => {
-    setSymptoms("");
-    setAnswers(emptyAnswers);
-
-    setTriageResult(null);
-    setSelectedPatient(null);
-
-    setError("");
-
-    setListening(false);
-
-    setVoiceStatus(
-      "Tap the microphone and describe the patient's problem"
-    );
-
-    setPage("triage");
-  };
-
-  /* =========================================================
-     PRIORITY STYLE
-  ========================================================= */
-
-  const getPriorityClass = (priority) => {
-    const value = String(
-      priority || ""
-    ).toLowerCase();
-
-    if (value.includes("emergency")) {
-      return "priority-emergency";
+  useEffect(() => {
+    if (page === "queue") {
+      loadQueue();
     }
 
-    if (value.includes("urgent")) {
-      return "priority-urgent";
+    if (page === "analytics") {
+      loadAnalytics();
     }
+  }, [page]);
 
-    return "priority-routine";
-  };
-
-  /* =========================================================
-     RESULT PAGE
-  ========================================================= */
-
-  if (page === "result" && triageResult) {
-    return (
-      <div className="app">
-        <Navbar
-          page={page}
-          setPage={setPage}
-          openQueue={openQueue}
-          openAnalytics={openAnalytics}
-        />
-
-        <main className="result-page">
-          <div className="result-card">
-            <div className="result-icon">
-              ⚕
-            </div>
-
-            <div className="result-label">
-              TRIAGE ASSESSMENT
-            </div>
-
-            <h1
-              className={`result-priority ${getPriorityClass(
-                triageResult.priority
-              )}`}
-            >
-              {triageResult.priority ||
-                "ROUTINE"}
-            </h1>
-
-            <div className="risk-score">
-              <div>
-                <span>Risk score</span>
-                <strong>
-                  {triageResult.risk_score || 0}
-                  /100
-                </strong>
-              </div>
-
-              <div className="score-bar">
-                <div
-                  style={{
-                    width: `${Math.min(
-                      triageResult.risk_score || 0,
-                      100
-                    )}%`,
-                  }}
-                />
-              </div>
-            </div>
-
-            <h2>
-              {triageResult.message ||
-                "Assessment completed"}
-            </h2>
-
-            <p className="result-description">
-              {triageResult.reason ||
-                "The assessment has been completed."}
-            </p>
-
-            {triageResult.factors?.length > 0 && (
-              <div className="result-box warning-box">
-                <h3>
-                  Why LifeLine flagged this case
-                </h3>
-
-                <ul>
-                  {triageResult.factors.map(
-                    (factor, index) => (
-                      <li key={index}>
-                        {factor}
-                      </li>
-                    )
-                  )}
-                </ul>
-              </div>
-            )}
-
-            <div className="result-box">
-              <h3>
-                Patient token
-              </h3>
-
-              <div className="token-display">
-                {triageResult.token ||
-                  "Generating..."}
-              </div>
-
-              <p>
-                Use this token to identify the
-                patient without displaying
-                personally identifiable information.
-              </p>
-            </div>
-
-            <div className="important-box">
-              <h3>
-                Clinical decision support
-              </h3>
-
-              <p>
-                LifeLine provides a triage
-                recommendation, not a diagnosis.
-                A qualified healthcare professional
-                must make the final clinical
-                decision.
-              </p>
-            </div>
-          </div>
-
-          <button
-            className="primary-button"
-            onClick={startNewAssessment}
-          >
-            Start new assessment
-          </button>
-        </main>
-      </div>
-    );
-  }
-
-  /* =========================================================
-     PATIENT DETAILS
-  ========================================================= */
-
-  if (
-    page === "patient" &&
-    selectedPatient
-  ) {
-    return (
-      <div className="app">
-        <Navbar
-          page={page}
-          setPage={setPage}
-          openQueue={openQueue}
-          openAnalytics={openAnalytics}
-        />
-
-        <main className="dashboard-page">
-          <button
-            className="back-button"
-            onClick={openQueue}
-          >
-            ← Back to queue
-          </button>
-
-          <section className="patient-header-card">
-            <div>
-              <div className="eyebrow">
-                ONE-MINUTE PATIENT VIEW
-              </div>
-
-              <h1>
-                {selectedPatient.token}
-              </h1>
-
-              <p>
-                Privacy-friendly patient
-                identifier
-              </p>
-            </div>
-
-            <div
-              className={`priority-badge large ${getPriorityClass(
-                selectedPatient.priority
-              )}`}
-            >
-              {selectedPatient.priority}
-            </div>
-          </section>
-
-          <div className="patient-grid">
-            <section className="doctor-card">
-              <h2>Clinical summary</h2>
-
-              <div className="summary-item">
-                <span>Main complaint</span>
-                <strong>
-                  {selectedPatient.symptoms}
-                </strong>
-              </div>
-
-              <div className="summary-grid">
-                <div>
-                  <span>Duration</span>
-                  <strong>
-                    {
-                      selectedPatient.answers
-                        ?.duration
-                    }
-                  </strong>
-                </div>
-
-                <div>
-                  <span>Worsening</span>
-                  <strong>
-                    {
-                      selectedPatient.answers
-                        ?.worsening
-                    }
-                  </strong>
-                </div>
-
-                <div>
-                  <span>Breathing difficulty</span>
-                  <strong>
-                    {
-                      selectedPatient.answers
-                        ?.breathing
-                    }
-                  </strong>
-                </div>
-
-                <div>
-                  <span>Chest pain</span>
-                  <strong>
-                    {
-                      selectedPatient.answers
-                        ?.chestPain
-                    }
-                  </strong>
-                </div>
-
-                <div>
-                  <span>Fainting</span>
-                  <strong>
-                    {
-                      selectedPatient.answers
-                        ?.fainting
-                    }
-                  </strong>
-                </div>
-
-                <div>
-                  <span>Medical history</span>
-                  <strong>
-                    {
-                      selectedPatient.answers
-                        ?.medicalHistory
-                    }
-                  </strong>
-                </div>
-              </div>
-            </section>
-
-            <section className="doctor-card">
-              <h2>
-                Why LifeLine flagged it
-              </h2>
-
-              {selectedPatient.factors?.length >
-                0 ? (
-                <ul className="doctor-factors">
-                  {selectedPatient.factors.map(
-                    (factor, index) => (
-                      <li key={index}>
-                        ✓ {factor}
-                      </li>
-                    )
-                  )}
-                </ul>
-              ) : (
-                <p className="muted">
-                  No major warning signs
-                  identified.
-                </p>
-              )}
-
-              <div className="doctor-reason">
-                {selectedPatient.reason}
-              </div>
-            </section>
-
-            <section className="doctor-card">
-              <h2>
-                Doctor decision
-              </h2>
-
-              <p className="muted">
-                AI recommendation:
-                <strong>
-                  {" "}
-                  {selectedPatient.ai_priority}
-                </strong>
-              </p>
-
-              <div className="override-buttons">
-                <button
-                  onClick={() =>
-                    overridePriority(
-                      selectedPatient.id,
-                      "EMERGENCY"
-                    )
-                  }
-                  className="override emergency"
-                >
-                  Emergency
-                </button>
-
-                <button
-                  onClick={() =>
-                    overridePriority(
-                      selectedPatient.id,
-                      "URGENT"
-                    )
-                  }
-                  className="override urgent"
-                >
-                  Urgent
-                </button>
-
-                <button
-                  onClick={() =>
-                    overridePriority(
-                      selectedPatient.id,
-                      "ROUTINE"
-                    )
-                  }
-                  className="override routine"
-                >
-                  Routine
-                </button>
-              </div>
-            </section>
-
-            <section className="doctor-card">
-              <h2>
-                Patient journey
-              </h2>
-
-              <div className="journey">
-                <JourneyStep
-                  title="Triage"
-                  active
-                />
-
-                <JourneyStep
-                  title="Doctor review"
-                  active={
-                    selectedPatient.status !==
-                    "WAITING"
-                  }
-                />
-
-                <JourneyStep
-                  title="Treatment"
-                  active={[
-                    "TREATMENT",
-                    "FOLLOW_UP",
-                    "RECOVERED",
-                  ].includes(
-                    selectedPatient.status
-                  )}
-                />
-
-                <JourneyStep
-                  title="Follow-up"
-                  active={[
-                    "FOLLOW_UP",
-                    "RECOVERED",
-                  ].includes(
-                    selectedPatient.status
-                  )}
-                />
-
-                <JourneyStep
-                  title="Recovered"
-                  active={
-                    selectedPatient.status ===
-                    "RECOVERED"
-                  }
-                />
-              </div>
-
-              <select
-                value={
-                  selectedPatient.status
-                }
-                onChange={(event) =>
-                  updatePatientStatus(
-                    selectedPatient.id,
-                    event.target.value
-                  )
-                }
-              >
-                <option value="WAITING">
-                  Waiting
-                </option>
-
-                <option value="IN_REVIEW">
-                  Doctor reviewing
-                </option>
-
-                <option value="TREATMENT">
-                  Treatment
-                </option>
-
-                <option value="FOLLOW_UP">
-                  Follow-up
-                </option>
-
-                <option value="RECOVERED">
-                  Recovered
-                </option>
-              </select>
-            </section>
-
-            <section className="doctor-card rescue-card">
-              <h2>
-                Queue Rescue
-              </h2>
-
-              <p>
-                Waiting:
-                <strong>
-                  {" "}
-                  {selectedPatient.wait_minutes}{" "}
-                  minutes
-                </strong>
-              </p>
-
-              {selectedPatient.rescue_required ? (
-                <div className="rescue-alert">
-                  ⚠ This patient has exceeded
-                  the recommended waiting
-                  threshold.
-                </div>
-              ) : (
-                <p className="muted">
-                  Waiting time is currently
-                  within the expected range.
-                </p>
-              )}
-
-              <button
-                className="secondary-button full"
-                onClick={() =>
-                  secondLook(
-                    selectedPatient.id
-                  )
-                }
-              >
-                Run second-look assessment
-              </button>
-            </section>
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  /* =========================================================
-     QUEUE
-  ========================================================= */
-
-  if (page === "queue") {
-    return (
-      <div className="app">
-        <Navbar
-          page={page}
-          setPage={setPage}
-          openQueue={openQueue}
-          openAnalytics={openAnalytics}
-        />
-
-        <main className="dashboard-page">
-          <section className="dashboard-header">
-            <div>
-              <div className="eyebrow">
-                CLINICAL OPERATIONS
-              </div>
-
-              <h1>
-                Doctor Queue
-              </h1>
-
-              <p>
-                Patients are prioritized using
-                risk and waiting time.
-              </p>
-            </div>
-
-            <button
-              className="secondary-button"
-              onClick={loadQueue}
-            >
-              {queueLoading
-                ? "Refreshing..."
-                : "Refresh queue"}
-            </button>
-          </section>
-
-          <section className="stats-grid">
-            <StatCard
-              title="Patients"
-              value={patients.length}
-              subtitle="Current assessments"
-            />
-
-            <StatCard
-              title="Emergency"
-              value={
-                patients.filter(
-                  (p) =>
-                    p.priority ===
-                    "EMERGENCY"
-                ).length
-              }
-              subtitle="Immediate review"
-            />
-
-            <StatCard
-              title="Urgent"
-              value={
-                patients.filter(
-                  (p) =>
-                    p.priority ===
-                    "URGENT"
-                ).length
-              }
-              subtitle="Priority review"
-            />
-
-            <StatCard
-              title="Queue rescue"
-              value={
-                patients.filter(
-                  (p) =>
-                    p.rescue_required
-                ).length
-              }
-              subtitle="Waiting too long"
-            />
-          </section>
-
-          <section className="queue-card">
-            <div className="queue-card-header">
-              <div>
-                <h2>
-                  Smart patient queue
-                </h2>
-
-                <p>
-                  Click a patient for the
-                  one-minute clinical view.
-                </p>
-              </div>
-
-              <span className="live-status">
-                <span />
-                Live
-              </span>
-            </div>
-
-            {patients.length === 0 ? (
-              <div className="empty-state">
-                <div className="empty-icon">
-                  ☰
-                </div>
-
-                <h3>
-                  No patients in queue
-                </h3>
-
-                <p>
-                  Completed triage
-                  assessments will appear
-                  here.
-                </p>
-              </div>
-            ) : (
-              <div className="patient-list">
-                {patients.map(
-                  (patient, index) => (
-                    <div
-                      className={`patient-row ${patient.rescue_required
-                          ? "rescue-row"
-                          : ""
-                        }`}
-                      key={patient.id}
-                      onClick={() =>
-                        openPatient(
-                          patient
-                        )
-                      }
-                    >
-                      <div className="patient-number">
-                        {index + 1}
-                      </div>
-
-                      <div className="patient-info">
-                        <strong>
-                          {patient.token}
-                        </strong>
-
-                        <span>
-                          {patient.symptoms}
-                        </span>
-                      </div>
-
-                      <div className="wait-time">
-                        {patient.wait_minutes}{" "}
-                        min
-                      </div>
-
-                      {patient.rescue_required && (
-                        <span className="rescue-mini">
-                          RESCUE
-                        </span>
-                      )}
-
-                      <div
-                        className={`priority-badge ${getPriorityClass(
-                          patient.priority
-                        )}`}
-                      >
-                        {
-                          patient.priority
-                        }
-                      </div>
-                    </div>
-                  )
-                )}
-              </div>
-            )}
-          </section>
-        </main>
-      </div>
-    );
-  }
-
-  /* =========================================================
-     ANALYTICS
-  ========================================================= */
-
-  if (page === "analytics") {
-    return (
-      <div className="app">
-        <Navbar
-          page={page}
-          setPage={setPage}
-          openQueue={openQueue}
-          openAnalytics={openAnalytics}
-        />
-
-        <main className="dashboard-page">
-          <section className="dashboard-header">
-            <div>
-              <div className="eyebrow">
-                CLINIC INTELLIGENCE
-              </div>
-
-              <h1>
-                Analytics
-              </h1>
-
-              <p>
-                Understand patient flow and
-                clinic workload.
-              </p>
-            </div>
-
-            <button
-              className="secondary-button"
-              onClick={loadAnalytics}
-            >
-              Refresh
-            </button>
-          </section>
-
-          {analytics ? (
-            <>
-              <section className="stats-grid">
-                <StatCard
-                  title="Total patients"
-                  value={
-                    analytics.total_patients
-                  }
-                  subtitle="Assessments today"
-                />
-
-                <StatCard
-                  title="Emergency"
-                  value={
-                    analytics.emergency
-                  }
-                  subtitle="Critical cases"
-                />
-
-                <StatCard
-                  title="Urgent"
-                  value={
-                    analytics.urgent
-                  }
-                  subtitle="Priority cases"
-                />
-
-                <StatCard
-                  title="Avg wait"
-                  value={`${analytics.average_wait} min`}
-                  subtitle="Current average"
-                />
-              </section>
-
-              <div className="analytics-grid">
-                <section className="analytics-card">
-                  <h2>
-                    Patient distribution
-                  </h2>
-
-                  <div className="distribution">
-                    <AnalyticsBar
-                      label="Emergency"
-                      value={
-                        analytics.emergency
-                      }
-                      total={
-                        analytics.total_patients
-                      }
-                      className="bar-emergency"
-                    />
-
-                    <AnalyticsBar
-                      label="Urgent"
-                      value={
-                        analytics.urgent
-                      }
-                      total={
-                        analytics.total_patients
-                      }
-                      className="bar-urgent"
-                    />
-
-                    <AnalyticsBar
-                      label="Routine"
-                      value={
-                        analytics.routine
-                      }
-                      total={
-                        analytics.total_patients
-                      }
-                      className="bar-routine"
-                    />
-                  </div>
-                </section>
-
-                <section className="analytics-card">
-                  <h2>
-                    Patient recovery
-                  </h2>
-
-                  <div className="recovery-grid">
-                    <RecoveryStat
-                      label="Waiting"
-                      value={
-                        analytics.statuses
-                          ?.WAITING || 0
-                      }
-                    />
-
-                    <RecoveryStat
-                      label="In review"
-                      value={
-                        analytics.statuses
-                          ?.IN_REVIEW || 0
-                      }
-                    />
-
-                    <RecoveryStat
-                      label="Treatment"
-                      value={
-                        analytics.statuses
-                          ?.TREATMENT || 0
-                      }
-                    />
-
-                    <RecoveryStat
-                      label="Follow-up"
-                      value={
-                        analytics.statuses
-                          ?.FOLLOW_UP || 0
-                      }
-                    />
-
-                    <RecoveryStat
-                      label="Recovered"
-                      value={
-                        analytics.statuses
-                          ?.RECOVERED || 0
-                      }
-                    />
-                  </div>
-                </section>
-              </div>
-
-              <section className="analytics-card wide">
-                <h2>
-                  Operational insights
-                </h2>
-
-                <div className="insight-grid">
-                  <div>
-                    <strong>
-                      {analytics.rescue_cases}
-                    </strong>
-
-                    <span>
-                      Queue rescue cases
-                    </span>
-                  </div>
-
-                  <div>
-                    <strong>
-                      {analytics.second_looks}
-                    </strong>
-
-                    <span>
-                      Second-look assessments
-                    </span>
-                  </div>
-
-                  <div>
-                    <strong>
-                      {analytics.recovered}
-                    </strong>
-
-                    <span>
-                      Patients marked recovered
-                    </span>
-                  </div>
-                </div>
-              </section>
-            </>
-          ) : (
-            <div className="empty-state">
-              Loading analytics...
-            </div>
-          )}
-        </main>
-      </div>
-    );
-  }
-
-  /* =========================================================
-     TRIAGE PAGE
-  ========================================================= */
+  const activePatients = queue.length;
 
   return (
-    <div className="app">
-      <Navbar
-        page={page}
-        setPage={setPage}
-        openQueue={openQueue}
-        openAnalytics={openAnalytics}
+    <div className="app-shell">
+      <video
+        className="background-video"
+        autoPlay
+        loop
+        muted
+        playsInline
+        src={VIDEO_URL}
       />
 
-      <main className="main-page">
-        <section className="hero">
-          <div className="eyebrow">
-            CLINICAL DECISION SUPPORT
+      <div className="video-overlay" />
+
+      <header className="navbar">
+        <button
+          className="brand"
+          onClick={() => navigate("home")}
+          aria-label="LifeLine home"
+        >
+          <LifeLineLogo />
+          <span>LifeLine</span>
+        </button>
+
+        <nav className="desktop-nav liquid-glass">
+          <button
+            className={page === "home" ? "nav-active" : ""}
+            onClick={() => navigate("home")}
+          >
+            Home
+          </button>
+
+          <button
+            className={page === "triage" ? "nav-active" : ""}
+            onClick={() => navigate("triage")}
+          >
+            Patient Triage
+          </button>
+
+          <button
+            className={page === "queue" ? "nav-active" : ""}
+            onClick={() => navigate("queue")}
+          >
+            Doctor Queue
+          </button>
+
+          <button
+            className={page === "analytics" ? "nav-active" : ""}
+            onClick={() => navigate("analytics")}
+          >
+            Analytics
+          </button>
+        </nav>
+
+        <div className="nav-right">
+          <div className="desktop-avatar liquid-glass">
+            <CircleUserRound size={20} strokeWidth={1.5} />
           </div>
 
-          <h1>
-            Identify who needs
-            <br />
-            <span>attention first.</span>
+          <button
+            className="mobile-menu-button liquid-glass"
+            onClick={() => setMenuOpen((previous) => !previous)}
+          >
+            <Menu
+              className={`menu-icon ${
+                menuOpen ? "menu-icon-hidden" : "menu-icon-visible"
+              }`}
+              size={21}
+            />
+
+            <X
+              className={`menu-icon ${
+                menuOpen ? "menu-icon-visible" : "menu-icon-hidden"
+              }`}
+              size={21}
+            />
+          </button>
+        </div>
+      </header>
+
+      <div className={`mobile-menu ${menuOpen ? "mobile-menu-open" : ""}`}>
+        <div className="mobile-menu-content">
+          <button onClick={() => navigate("home")}>Home</button>
+          <button onClick={() => navigate("triage")}>Patient Triage</button>
+          <button onClick={() => navigate("queue")}>Doctor Queue</button>
+          <button onClick={() => navigate("analytics")}>Analytics</button>
+
+          <div className="mobile-account">
+            <div className="mobile-account-avatar liquid-glass">
+              <CircleUserRound size={20} />
+            </div>
+            <span>Doctor Account</span>
+          </div>
+        </div>
+      </div>
+
+      <main
+        className={`main-content ${
+          menuOpen ? "main-content-menu-open" : ""
+        }`}
+      >
+        {page === "home" && (
+          <HomePage
+            activePatients={activePatients}
+            navigate={navigate}
+          />
+        )}
+
+        {page === "triage" && (
+          <TriagePage
+            language={language}
+            setLanguage={setLanguage}
+            symptoms={symptoms}
+            setSymptoms={setSymptoms}
+            answers={answers}
+            handleAnswer={handleAnswer}
+            handleSubmit={handleSubmit}
+            loading={loading}
+            error={error}
+            isListening={isListening}
+            startVoiceInput={startVoiceInput}
+            triageResult={triageResult}
+            startNewAssessment={startNewAssessment}
+          />
+        )}
+
+        {page === "queue" && (
+          <QueuePage
+            queue={queue}
+            refreshQueue={loadQueue}
+          />
+        )}
+
+        {page === "analytics" && (
+          <AnalyticsPage analytics={analytics} />
+        )}
+      </main>
+    </div>
+  );
+}
+
+/* =========================================================
+   HOME
+========================================================= */
+
+function HomePage({ activePatients, navigate }) {
+  return (
+    <section className="landing-page">
+      <div className="landing-top">
+        <div className="hero-badge liquid-glass">
+          <div className="avatar-stack">
+            {AVATARS.map((avatar) => (
+              <img key={avatar} src={avatar} alt="" />
+            ))}
+          </div>
+
+          <span>AI-assisted clinical triage</span>
+        </div>
+
+        <h1>
+          Prioritize care.
+          <br />
+          <span>Save critical time.</span>
+        </h1>
+
+        <p className="hero-subtitle">
+          LifeLine helps overloaded clinics identify warning signs and
+          prioritize patients before they disappear in the queue.
+        </p>
+
+        <div className="hero-actions">
+          <button
+            className="glass-cta liquid-glass"
+            onClick={() => navigate("triage")}
+          >
+            Start Patient Triage
+            <ChevronRight size={17} />
+          </button>
+
+          <button
+            className="secondary-cta"
+            onClick={() => navigate("queue")}
+          >
+            Doctor Dashboard
+          </button>
+        </div>
+      </div>
+
+      <div className="landing-stats">
+        <Stat
+          icon={<Siren size={17} />}
+          value="3"
+          label="Triage Priorities"
+        />
+
+        <Stat
+          icon={<Users size={17} />}
+          value={`${activePatients || "Live"}`}
+          label="Patient Queue"
+        />
+
+        <Stat
+          icon={<Activity size={17} />}
+          value="Real-time"
+          label="Risk Monitoring"
+        />
+      </div>
+    </section>
+  );
+}
+
+function Stat({ icon, value, label }) {
+  return (
+    <div className="stat-block">
+      <div className="stat-icon">{icon}</div>
+      <div className="stat-value">{value}</div>
+      <div className="stat-label">{label}</div>
+    </div>
+  );
+}
+
+/* =========================================================
+   TRIAGE
+========================================================= */
+
+function TriagePage({
+  language,
+  setLanguage,
+  symptoms,
+  setSymptoms,
+  answers,
+  handleAnswer,
+  handleSubmit,
+  loading,
+  error,
+  isListening,
+  startVoiceInput,
+  triageResult,
+  startNewAssessment,
+}) {
+  if (triageResult) {
+    return (
+      <section className="content-page result-screen">
+        <div className="glass-panel result-panel">
+          <div className="result-symbol">
+            {triageResult.priority === "EMERGENCY" ? (
+              <Siren size={38} />
+            ) : (
+              <HeartPulse size={38} />
+            )}
+          </div>
+
+          <div className="eyebrow">TRIAGE PRIORITY</div>
+
+          <h1
+            className={`priority-title priority-${String(
+              triageResult.priority || ""
+            ).toLowerCase()}`}
+          >
+            {triageResult.priority || "EMERGENCY"}
           </h1>
 
-          <p>
-            LifeLine helps frontline healthcare
-            teams identify warning signs through
-            structured, multilingual triage.
-          </p>
-        </section>
+          <h2>
+            {triageResult.message ||
+              "Your responses have been assessed by the LifeLine triage engine."}
+          </h2>
 
-        <form
-          className="assessment-card"
-          onSubmit={handleSubmit}
-        >
-          <div className="section-header">
-            <div className="section-number">
-              01
+          <p className="result-description">
+            {triageResult.reason ||
+              "The system identified the warning signs contained in your assessment."}
+          </p>
+
+          {Array.isArray(triageResult.factors) &&
+            triageResult.factors.length > 0 && (
+              <div className="result-detail-box">
+                <div className="detail-heading">
+                  <AlertCircle size={17} />
+                  Factors identified
+                </div>
+
+                <ul>
+                  {triageResult.factors.map((factor, index) => (
+                    <li key={index}>{factor}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+          <div className="result-detail-box">
+            <div className="detail-heading">
+              <ShieldCheck size={17} />
+              Important
             </div>
 
-            <div>
-              <h2>
-                Patient information
-              </h2>
+            <p>
+              LifeLine provides a triage recommendation and does not diagnose
+              disease. The system is designed to help healthcare teams
+              prioritize attention.
+            </p>
+          </div>
 
-              <p>
-                Start with the patient's main
-                concern.
-              </p>
+          <button className="glass-cta liquid-glass" onClick={startNewAssessment}>
+            Start New Assessment
+            <ChevronRight size={17} />
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="content-page">
+      <div className="page-heading">
+        <div className="eyebrow">PATIENT ASSESSMENT</div>
+        <h1>Tell us what you're experiencing.</h1>
+        <p>
+          A few structured questions help LifeLine identify potential warning
+          signs.
+        </p>
+      </div>
+
+      <form className="glass-panel triage-panel" onSubmit={handleSubmit}>
+        <div className="form-section">
+          <div className="section-title">
+            <div className="section-number">01</div>
+            <div>
+              <h2>Describe the problem</h2>
+              <p>You can type or speak in your chosen language.</p>
             </div>
           </div>
 
-          <div className="field">
-            <label>
-              Preferred language
-            </label>
+          <div className="form-field">
+            <label>Preferred language</label>
 
             <select
               value={language}
-              onChange={(event) =>
-                setLanguage(
-                  event.target.value
-                )
-              }
+              onChange={(event) => setLanguage(event.target.value)}
             >
-              <option>
-                English
-              </option>
-
-              <option>
-                Tamil
-              </option>
-
-              <option>
-                Hindi
-              </option>
+              <option>English</option>
+              <option>Tamil</option>
+              <option>Hindi</option>
             </select>
           </div>
 
-          <div className="field">
-            <div className="label-row">
-              <label>
-                What is bothering you?
-              </label>
+          <div className="symptom-box">
+            <textarea
+              value={symptoms}
+              onChange={(event) => setSymptoms(event.target.value)}
+              placeholder="Describe what you are feeling..."
+              required
+            />
 
-              <span className="input-hint">
-                Type or speak
-              </span>
-            </div>
-
-            <div
-              className={`voice-box ${listening
-                  ? "listening"
-                  : ""
-                }`}
+            <button
+              type="button"
+              className={`voice-button liquid-glass ${
+                isListening ? "voice-active" : ""
+              }`}
+              onClick={startVoiceInput}
             >
-              <textarea
-                value={symptoms}
-                onChange={(event) =>
-                  setSymptoms(
-                    event.target.value
-                  )
-                }
-                placeholder="Describe the patient's symptoms or concerns..."
-                rows="5"
-                required
-              />
+              {isListening ? <MicOff size={19} /> : <Mic size={19} />}
 
-              <div className="voice-controls">
-                <button
-                  type="button"
-                  className={`mic-button ${listening
-                      ? "mic-active"
-                      : ""
-                    }`}
-                  onClick={
-                    startVoiceInput
-                  }
-                  disabled={
-                    !voiceSupported ||
-                    listening
-                  }
-                >
-                  <span className="mic-icon">
-                    {listening
-                      ? "●"
-                      : "🎙"}
-                  </span>
-
-                  <span>
-                    {listening
-                      ? "Listening..."
-                      : "Speak symptoms"}
-                  </span>
-                </button>
-
-                <span className="voice-language">
-                  {language}
-                </span>
-              </div>
-
-              <div className="voice-status">
-                {voiceStatus}
-              </div>
-            </div>
+              <span>
+                {isListening ? "Listening..." : "Speak"}
+              </span>
+            </button>
           </div>
 
-          <div className="section-divider" />
-
-          <div className="section-header">
-            <div className="section-number">
-              02
+          {isListening && (
+            <div className="listening-indicator">
+              <span className="pulse-dot" />
+              Listening in {language}
             </div>
+          )}
+        </div>
 
+        <div className="form-divider" />
+
+        <div className="form-section">
+          <div className="section-title">
+            <div className="section-number">02</div>
             <div>
-              <h2>
-                Safety questions
-              </h2>
-
+              <h2>Safety questions</h2>
               <p>
-                These questions identify
-                important warning signs.
+                These questions help identify symptoms that may need faster
+                attention.
               </p>
             </div>
           </div>
@@ -1452,316 +647,403 @@ function App() {
                 "4–7 days",
                 "More than a week",
               ]}
-              onChange={(value) =>
-                handleAnswer(
-                  "duration",
-                  value
-                )
-              }
+              onChange={(value) => handleAnswer("duration", value)}
             />
 
             <Question
               label="Are your symptoms getting worse?"
               value={answers.worsening}
-              options={[
-                "Yes",
-                "No",
-              ]}
-              onChange={(value) =>
-                handleAnswer(
-                  "worsening",
-                  value
-                )
-              }
+              options={["Yes", "No"]}
+              onChange={(value) => handleAnswer("worsening", value)}
             />
 
             <Question
               label="Are you having difficulty breathing?"
               value={answers.breathing}
-              options={[
-                "Yes",
-                "No",
-              ]}
-              onChange={(value) =>
-                handleAnswer(
-                  "breathing",
-                  value
-                )
-              }
+              options={["Yes", "No"]}
+              onChange={(value) => handleAnswer("breathing", value)}
             />
 
             <Question
               label="Are you experiencing severe or concerning chest pain?"
               value={answers.chestPain}
-              options={[
-                "Yes",
-                "No",
-              ]}
-              onChange={(value) =>
-                handleAnswer(
-                  "chestPain",
-                  value
-                )
-              }
+              options={["Yes", "No"]}
+              onChange={(value) => handleAnswer("chestPain", value)}
             />
 
             <Question
               label="Have you fainted or nearly fainted?"
               value={answers.fainting}
-              options={[
-                "Yes",
-                "No",
-              ]}
-              onChange={(value) =>
-                handleAnswer(
-                  "fainting",
-                  value
-                )
-              }
+              options={["Yes", "No"]}
+              onChange={(value) => handleAnswer("fainting", value)}
             />
 
             <Question
               label="Do you have important medical history?"
               value={answers.medicalHistory}
-              options={[
-                "Yes",
-                "No",
-              ]}
-              onChange={(value) =>
-                handleAnswer(
-                  "medicalHistory",
-                  value
-                )
-              }
+              options={["Yes", "No"]}
+              onChange={(value) => handleAnswer("medicalHistory", value)}
             />
           </div>
+        </div>
 
-          {error && (
-            <div className="error-message">
-              ⚠ {error}
-            </div>
-          )}
+        {error && <div className="error-message">{error}</div>}
 
-          <div className="submit-area">
-            <button
-              type="submit"
-              className="primary-button"
-              disabled={loading}
-            >
-              {loading
-                ? "Assessing patient..."
-                : "Submit for triage →"}
-            </button>
+        <button
+          type="submit"
+          className="submit-triage liquid-glass"
+          disabled={loading}
+        >
+          {loading ? "Assessing..." : "Submit for Triage"}
+          {!loading && <ChevronRight size={18} />}
+        </button>
 
-            <p>
-              Clinical decision support only.
-              Final decisions remain with
-              qualified healthcare
-              professionals.
-            </p>
-          </div>
-        </form>
-      </main>
+        <div className="privacy-note">
+          <ShieldCheck size={14} />
+          Responses are used for this triage assessment.
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function Question({ label, value, options, onChange }) {
+  return (
+    <div className="question-card">
+      <label>{label}</label>
+
+      <div className="option-row">
+        {options.map((option) => (
+          <button
+            type="button"
+            key={option}
+            className={`option-button ${
+              value === option ? "selected" : ""
+            }`}
+            onClick={() => onChange(option)}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
 
 /* =========================================================
-   COMPONENTS
+   DOCTOR QUEUE
 ========================================================= */
 
-function Navbar({
-  page,
-  setPage,
-  openQueue,
-  openAnalytics,
-}) {
-  return (
-    <header className="navbar">
-      <div
-        className="logo"
-        onClick={() =>
-          setPage("triage")
-        }
-      >
-        <span className="logo-mark">
-          +
-        </span>
+function QueuePage({ queue, refreshQueue }) {
+  const sortedQueue = useMemo(() => {
+    const order = {
+      EMERGENCY: 0,
+      URGENT: 1,
+      ROUTINE: 2,
+    };
 
-        LifeLine
+    return [...queue].sort(
+      (a, b) =>
+        (order[a.priority] ?? 3) - (order[b.priority] ?? 3)
+    );
+  }, [queue]);
+
+  return (
+    <section className="content-page dashboard-page">
+      <div className="dashboard-header">
+        <div>
+          <div className="eyebrow">CLINICAL OPERATIONS</div>
+          <h1>Doctor Queue</h1>
+          <p>Prioritize patients according to triage risk.</p>
+        </div>
+
+        <button className="refresh-button liquid-glass" onClick={refreshQueue}>
+          Refresh Queue
+        </button>
       </div>
 
-      <nav className="nav-links">
-        <button
-          className={
-            page === "triage"
-              ? "nav-active"
-              : ""
-          }
-          onClick={() =>
-            setPage("triage")
-          }
-        >
-          Triage
-        </button>
+      <div className="dashboard-metrics">
+        <MetricCard
+          icon={<Users size={18} />}
+          value={queue.length}
+          label="Patients Waiting"
+        />
 
-        <button
-          className={
-            page === "queue"
-              ? "nav-active"
-              : ""
-          }
-          onClick={openQueue}
-        >
-          Doctor Queue
-        </button>
+        <MetricCard
+          icon={<Siren size={18} />}
+          value={queue.filter((p) => p.priority === "EMERGENCY").length}
+          label="Emergency"
+        />
 
-        <button
-          className={
-            page === "analytics"
-              ? "nav-active"
-              : ""
-          }
-          onClick={openAnalytics}
-        >
-          Analytics
-        </button>
-      </nav>
+        <MetricCard
+          icon={<AlertCircle size={18} />}
+          value={queue.filter((p) => p.priority === "URGENT").length}
+          label="Urgent"
+        />
 
-      <div className="status-pill">
-        <span className="status-dot" />
-        System operational
+        <MetricCard
+          icon={<CheckCircle2 size={18} />}
+          value={queue.filter((p) => p.status === "Recovered").length}
+          label="Recovered"
+        />
       </div>
-    </header>
-  );
-}
 
-function Question({
-  label,
-  value,
-  options,
-  onChange,
-}) {
-  return (
-    <div className="question">
-      <label>
-        {label}
-      </label>
+      <div className="queue-panel glass-panel">
+        <div className="queue-panel-header">
+          <div>
+            <h2>Live Patient Queue</h2>
+            <p>Highest-risk cases appear first.</p>
+          </div>
 
-      <div className="option-row">
-        {options.map(
-          (option) => (
-            <button
-              type="button"
-              key={option}
-              className={`option-button ${value === option
-                  ? "selected"
-                  : ""
-                }`}
-              onClick={() =>
-                onChange(option)
-              }
-            >
-              {option}
-            </button>
-          )
+          <div className="live-indicator">
+            <span />
+            LIVE
+          </div>
+        </div>
+
+        {sortedQueue.length === 0 ? (
+          <div className="empty-state">
+            <HeartPulse size={34} />
+            <h3>No patients in queue</h3>
+            <p>New triage assessments will appear here.</p>
+          </div>
+        ) : (
+          <div className="queue-list">
+            {sortedQueue.map((patient, index) => (
+              <PatientRow
+                key={patient.id || index}
+                patient={patient}
+                index={index}
+              />
+            ))}
+          </div>
         )}
       </div>
+    </section>
+  );
+}
+
+function MetricCard({ icon, value, label }) {
+  return (
+    <div className="metric-card liquid-glass">
+      <div className="metric-icon">{icon}</div>
+      <strong>{value}</strong>
+      <span>{label}</span>
     </div>
   );
 }
 
-function StatCard({
-  title,
-  value,
-  subtitle,
-}) {
+function PatientRow({ patient, index }) {
+  const priority = String(patient.priority || "ROUTINE").toUpperCase();
+
   return (
-    <div className="stat-card">
-      <span>
-        {title}
-      </span>
-
-      <strong>
-        {value}
-      </strong>
-
-      <small>
-        {subtitle}
-      </small>
-    </div>
-  );
-}
-
-function JourneyStep({
-  title,
-  active,
-}) {
-  return (
-    <div
-      className={`journey-step ${active ? "active" : ""
-        }`}
-    >
-      <div className="journey-dot">
-        {active ? "✓" : ""}
+    <div className="patient-row">
+      <div className="queue-position">
+        #{index + 1}
       </div>
 
-      <span>
-        {title}
-      </span>
-    </div>
-  );
-}
+      <div className={`priority-dot ${priority.toLowerCase()}`} />
 
-function AnalyticsBar({
-  label,
-  value,
-  total,
-  className,
-}) {
-  const percentage =
-    total > 0
-      ? (value / total) * 100
-      : 0;
-
-  return (
-    <div className="analytics-bar">
-      <div className="bar-label">
-        <span>
-          {label}
-        </span>
-
+      <div className="patient-main">
         <strong>
-          {value}
+          {patient.patient_name ||
+            patient.name ||
+            `Patient ${patient.id || index + 1}`}
         </strong>
+
+        <span>
+          {patient.symptoms || "Assessment submitted"}
+        </span>
       </div>
 
-      <div className="bar-track">
+      <div className="patient-time">
+        <Clock3 size={14} />
+        {patient.wait_time || patient.created_at || "Just now"}
+      </div>
+
+      <div className={`priority-tag ${priority.toLowerCase()}`}>
+        {priority}
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   ANALYTICS
+========================================================= */
+
+function AnalyticsPage({ analytics }) {
+  const stats = analytics || {
+    total_patients: 0,
+    emergency: 0,
+    urgent: 0,
+    routine: 0,
+    recovered: 0,
+    average_wait_time: "—",
+  };
+
+  const total = Number(stats.total_patients || 0);
+
+  return (
+    <section className="content-page dashboard-page">
+      <div className="dashboard-header">
+        <div>
+          <div className="eyebrow">CLINICAL INSIGHTS</div>
+          <h1>Analytics</h1>
+          <p>Understand patient flow, risk distribution and recovery.</p>
+        </div>
+      </div>
+
+      <div className="analytics-grid">
+        <AnalyticsCard
+          title="Total Patients"
+          value={stats.total_patients}
+          icon={<Users size={19} />}
+          description="Patients assessed"
+        />
+
+        <AnalyticsCard
+          title="Emergency"
+          value={stats.emergency}
+          icon={<Siren size={19} />}
+          description="Highest priority"
+        />
+
+        <AnalyticsCard
+          title="Urgent"
+          value={stats.urgent}
+          icon={<AlertCircle size={19} />}
+          description="Needs faster review"
+        />
+
+        <AnalyticsCard
+          title="Recovered"
+          value={stats.recovered}
+          icon={<CheckCircle2 size={19} />}
+          description="Completed cases"
+        />
+      </div>
+
+      <div className="analytics-main">
+        <div className="glass-panel distribution-panel">
+          <div className="panel-title">
+            <div>
+              <h2>Priority Distribution</h2>
+              <p>Current triage severity breakdown.</p>
+            </div>
+            <BarChart3 size={20} />
+          </div>
+
+          <ProgressBar
+            label="Emergency"
+            value={stats.emergency}
+            total={total}
+            type="emergency"
+          />
+
+          <ProgressBar
+            label="Urgent"
+            value={stats.urgent}
+            total={total}
+            type="urgent"
+          />
+
+          <ProgressBar
+            label="Routine"
+            value={stats.routine}
+            total={total}
+            type="routine"
+          />
+        </div>
+
+        <div className="glass-panel recovery-panel">
+          <div className="panel-title">
+            <div>
+              <h2>Recovery Process</h2>
+              <p>Patient outcome overview.</p>
+            </div>
+
+            <Activity size={20} />
+          </div>
+
+          <div className="recovery-circle">
+            <div>
+              <strong>
+                {total
+                  ? Math.round(
+                      (Number(stats.recovered || 0) / total) * 100
+                    )
+                  : 0}
+                %
+              </strong>
+              <span>Recovered</span>
+            </div>
+          </div>
+
+          <div className="recovery-info">
+            <span>
+              <Clock3 size={15} />
+              Average wait: {stats.average_wait_time || "—"}
+            </span>
+
+            <span>
+              <HeartPulse size={15} />
+              Completed cases: {stats.recovered || 0}
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AnalyticsCard({ title, value, icon, description }) {
+  return (
+    <div className="analytics-card glass-panel">
+      <div className="analytics-icon">{icon}</div>
+      <span>{title}</span>
+      <strong>{value}</strong>
+      <small>{description}</small>
+    </div>
+  );
+}
+
+function ProgressBar({ label, value, total, type }) {
+  const percentage = total
+    ? Math.min(100, (Number(value || 0) / total) * 100)
+    : 0;
+
+  return (
+    <div className="progress-item">
+      <div className="progress-label">
+        <span>{label}</span>
+        <strong>{value || 0}</strong>
+      </div>
+
+      <div className="progress-track">
         <div
-          className={className}
-          style={{
-            width: `${percentage}%`,
-          }}
+          className={`progress-fill ${type}`}
+          style={{ width: `${percentage}%` }}
         />
       </div>
     </div>
   );
 }
 
-function RecoveryStat({
-  label,
-  value,
-}) {
-  return (
-    <div className="recovery-stat">
-      <strong>
-        {value}
-      </strong>
+/* =========================================================
+   LOGO
+========================================================= */
 
-      <span>
-        {label}
-      </span>
-    </div>
+function LifeLineLogo() {
+  return (
+    <svg
+      className="lifeline-logo"
+      viewBox="0 0 256 256"
+      fill="white"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path d="M 128 128 C 198.692 128 256 185.308 256 256 L 151.883 256 C 149.812 220.307 120.213 192 84 192 C 47.787 192 18.188 220.307 16.117 256 L 0 256 C 0 185.308 57.308 128 128 128 Z M 104.117 0 C 106.188 35.694 135.787 64 172 64 C 208.213 64 237.812 35.694 239.883 0 L 256 0 C 256 70.692 198.692 128 128 128 C 57.308 128 0 70.692 0 0 Z" />
+    </svg>
   );
 }
 
