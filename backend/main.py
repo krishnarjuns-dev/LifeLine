@@ -6,195 +6,276 @@ import uuid
 app = Flask(__name__)
 CORS(app)
 
+# ============================================================
+# IN-MEMORY DATABASE
+# ============================================================
 
-# =========================================================
-# IN-MEMORY DATA
-# =========================================================
-
-patient_queue = []
-patient_statuses = {}
+patients = []
 
 
-# =========================================================
+# ============================================================
+# PRIORITY ORDER
+# ============================================================
+
+PRIORITY_ORDER = {
+    "EMERGENCY": 0,
+    "URGENT": 1,
+    "ROUTINE": 2,
+}
+
+
+# ============================================================
+# TIME HELPERS
+# ============================================================
+
+def calculate_wait_minutes(created_at):
+    try:
+        created = datetime.fromisoformat(
+            created_at
+        )
+
+        now = datetime.now()
+
+        seconds = (
+            now - created
+        ).total_seconds()
+
+        return max(
+            0,
+            int(seconds // 60)
+        )
+
+    except Exception:
+        return 0
+
+
+# ============================================================
 # TRIAGE ENGINE
-# =========================================================
+# ============================================================
 
-def run_triage(symptoms, answers):
-
-    symptoms_text = (symptoms or "").lower()
-
-    duration = answers.get("duration", "")
-    worsening = answers.get("worsening", "")
-    breathing = answers.get("breathing", "")
-    chest_pain = answers.get("chestPain", "")
-    fainting = answers.get("fainting", "")
-    medical_history = answers.get("medicalHistory", "")
+def calculate_triage(
+    symptoms,
+    answers
+):
+    symptoms_lower = symptoms.lower()
 
     emergency_factors = []
     urgent_factors = []
 
-    # -----------------------------
-    # EMERGENCY SAFETY RULES
-    # -----------------------------
+    # --------------------------------------------------------
+    # STRUCTURED QUESTIONS
+    # --------------------------------------------------------
 
-    if breathing == "Yes":
-        emergency_factors.append("Difficulty breathing")
+    if answers.get("breathing") == "Yes":
+        emergency_factors.append(
+            "Difficulty breathing"
+        )
 
-    if chest_pain == "Yes":
+    if answers.get("chestPain") == "Yes":
         emergency_factors.append(
             "Severe or concerning chest pain"
         )
 
-    if fainting == "Yes":
+    if answers.get("fainting") == "Yes":
         emergency_factors.append(
             "Fainting or near-fainting"
         )
 
-    emergency_keywords = [
-        "severe chest pain",
-        "crushing chest pain",
-        "pressure in chest",
-        "can't breathe",
-        "cannot breathe",
-        "difficulty breathing",
-        "shortness of breath",
-        "unconscious",
-        "unresponsive",
-        "fainted",
-        "passing out",
-        "severe bleeding",
-        "heavy bleeding",
-        "stroke",
-        "seizure"
-    ]
-
-    for keyword in emergency_keywords:
-
-        if keyword in symptoms_text:
-
-            emergency_factors.append(
-                f"Possible warning sign: {keyword}"
-            )
-
-    # -----------------------------
-    # URGENT FACTORS
-    # -----------------------------
-
-    if worsening == "Yes":
+    if answers.get("worsening") == "Yes":
         urgent_factors.append(
             "Symptoms are getting worse"
         )
 
-    if medical_history == "Yes":
+    if answers.get("medicalHistory") == "Yes":
         urgent_factors.append(
-            "Important medical history reported"
+            "Important medical history"
         )
 
-    if duration == "More than a week":
-        urgent_factors.append(
-            "Symptoms have persisted for more than a week"
-        )
+    # --------------------------------------------------------
+    # TEXT RED FLAGS
+    # --------------------------------------------------------
 
-    # -----------------------------
+    emergency_keywords = [
+        "unconscious",
+        "cannot breathe",
+        "can't breathe",
+        "severe chest pain",
+        "heart attack",
+        "stroke",
+        "seizure",
+        "heavy bleeding",
+        "not breathing",
+    ]
+
+    urgent_keywords = [
+        "high fever",
+        "severe pain",
+        "vomiting blood",
+        "blood in stool",
+        "confusion",
+        "very weak",
+        "persistent vomiting",
+    ]
+
+    for keyword in emergency_keywords:
+        if keyword in symptoms_lower:
+            emergency_factors.append(
+                f"Potential emergency symptom: {keyword}"
+            )
+
+    for keyword in urgent_keywords:
+        if keyword in symptoms_lower:
+            urgent_factors.append(
+                f"Concerning symptom: {keyword}"
+            )
+
+    emergency_factors = list(
+        dict.fromkeys(
+            emergency_factors
+        )
+    )
+
+    urgent_factors = list(
+        dict.fromkeys(
+            urgent_factors
+        )
+    )
+
+    # --------------------------------------------------------
+    # RISK SCORE
+    # --------------------------------------------------------
+
+    risk_score = 10
+
+    risk_score += (
+        len(emergency_factors) * 35
+    )
+
+    risk_score += (
+        len(urgent_factors) * 15
+    )
+
+    if answers.get("duration") == "More than a week":
+        risk_score += 5
+
+    risk_score = min(
+        risk_score,
+        100
+    )
+
+    # --------------------------------------------------------
     # PRIORITY
-    # -----------------------------
+    # --------------------------------------------------------
 
     if emergency_factors:
+        priority = "EMERGENCY"
 
-        return {
-            "priority": "EMERGENCY",
-            "message": "Immediate medical attention may be needed",
-            "reason": (
-                "Your answers contain one or more warning signs "
-                "that should not wait in a routine queue."
-            ),
-            "factors": emergency_factors
-        }
+        message = (
+            "Immediate medical attention may be needed."
+        )
+
+        reason = (
+            "One or more potentially serious "
+            "warning signs were identified."
+        )
+
+        factors = emergency_factors
 
     elif urgent_factors:
+        priority = "URGENT"
 
-        return {
-            "priority": "URGENT",
-            "message": "Prompt medical attention is recommended",
-            "reason": (
-                "One or more factors suggest that this case "
-                "may need earlier clinical review."
-            ),
-            "factors": urgent_factors
-        }
+        message = (
+            "Priority medical review is recommended."
+        )
+
+        reason = (
+            "The assessment identified symptoms "
+            "or risk factors that may require "
+            "earlier clinical evaluation."
+        )
+
+        factors = urgent_factors
 
     else:
+        priority = "ROUTINE"
 
-        return {
-            "priority": "ROUTINE",
-            "message": "Routine medical review may be appropriate",
-            "reason": (
-                "No immediate warning signs were identified "
-                "from the information provided."
-            ),
-            "factors": []
-        }
+        message = (
+            "Routine medical assessment is appropriate."
+        )
 
+        reason = (
+            "No major emergency warning signs "
+            "were identified from the information provided."
+        )
 
-# =========================================================
-# PATIENT SUMMARY
-# =========================================================
-
-def create_patient_summary(symptoms, answers, result):
-
-    red_flags = (
-        ", ".join(result["factors"])
-        if result["factors"]
-        else "None identified"
-    )
-
-    history = (
-        "Important medical history reported"
-        if answers.get("medicalHistory") == "Yes"
-        else "No important medical history reported"
-    )
+        factors = []
 
     return {
-        "chief_complaint": symptoms,
-        "duration": answers.get(
-            "duration",
-            "Not provided"
-        ),
-        "red_flags": red_flags,
-        "relevant_history": history,
-        "priority_rationale": result["reason"]
+        "priority": priority,
+        "risk_score": risk_score,
+        "message": message,
+        "reason": reason,
+        "factors": factors,
     }
 
 
-# =========================================================
-# HOME
-# =========================================================
+# ============================================================
+# QUEUE SORTING
+# ============================================================
 
-@app.route("/", methods=["GET"])
-def home():
+def sort_patients():
+    for patient in patients:
+        patient["wait_minutes"] = calculate_wait_minutes(
+            patient["created_at"]
+        )
 
-    return jsonify({
-        "status": "LifeLine backend is running",
-        "service": "LifeLine Safe AI Triage Engine",
-        "queue_size": len(patient_queue)
-    })
+        # ----------------------------------------------------
+        # QUEUE RESCUE
+        # ----------------------------------------------------
+
+        if patient["priority"] == "EMERGENCY":
+            threshold = 10
+
+        elif patient["priority"] == "URGENT":
+            threshold = 25
+
+        else:
+            threshold = 60
+
+        patient["rescue_required"] = (
+            patient["wait_minutes"] >= threshold
+            and patient["status"] == "WAITING"
+        )
+
+    patients.sort(
+        key=lambda patient: (
+            0
+            if patient["rescue_required"]
+            else PRIORITY_ORDER.get(
+                patient["priority"],
+                3
+            ),
+            -patient["wait_minutes"],
+        )
+    )
 
 
-# =========================================================
-# PATIENT TRIAGE
-# =========================================================
+# ============================================================
+# TRIAGE API
+# ============================================================
 
-@app.route("/api/triage", methods=["POST"])
+@app.route(
+    "/api/triage",
+    methods=["POST"]
+)
 def triage():
 
     try:
-
         data = request.get_json()
 
         if not data:
-
             return jsonify({
-                "detail": "No JSON data received"
+                "detail": "No data received"
             }), 400
 
         language = data.get(
@@ -205,121 +286,75 @@ def triage():
         symptoms = data.get(
             "symptoms",
             ""
-        )
+        ).strip()
 
         answers = data.get(
             "answers",
             {}
         )
 
-        if not symptoms.strip():
-
+        if not symptoms:
             return jsonify({
-                "detail": (
-                    "Please describe the main symptom "
-                    "or concern."
-                )
+                "detail": "Symptoms are required"
             }), 400
 
-        required_answers = [
-            "duration",
-            "worsening",
-            "breathing",
-            "chestPain",
-            "fainting",
-            "medicalHistory"
-        ]
-
-        for field in required_answers:
-
-            if not answers.get(field):
-
-                return jsonify({
-                    "detail":
-                        f"Please answer the question: {field}"
-                }), 400
-
-        # Run triage
-        result = run_triage(
+        result = calculate_triage(
             symptoms,
             answers
         )
 
-        # Generate patient ID
-        patient_id = str(
-            uuid.uuid4()
-        )[:8].upper()
+        # ----------------------------------------------------
+        # TOKEN
+        # ----------------------------------------------------
 
-        # Create doctor summary
-        summary = create_patient_summary(
-            symptoms,
-            answers,
-            result
+        token = (
+            "LL-"
+            + str(
+                len(patients) + 1
+            ).zfill(3)
         )
 
-        # Create queue patient
         patient = {
+            "id": str(uuid.uuid4()),
 
-            "id": patient_id,
+            "token": token,
 
-            "queue_number":
-                len(patient_queue) + 1,
+            "language": language,
 
-            "created_at":
-                datetime.now().isoformat(),
+            "symptoms": symptoms,
 
-            "language":
-                language,
+            "answers": answers,
 
-            "symptoms":
-                symptoms,
+            "priority": result["priority"],
 
-            "answers":
-                answers,
+            "ai_priority": result["priority"],
 
-            "priority":
-                result["priority"],
+            "risk_score": result["risk_score"],
 
-            "original_priority":
-                result["priority"],
+            "reason": result["reason"],
 
-            "message":
-                result["message"],
+            "factors": result["factors"],
 
-            "reason":
-                result["reason"],
+            "status": "WAITING",
 
-            "factors":
-                result["factors"],
+            "created_at": datetime.now().isoformat(),
 
-            "summary":
-                summary,
+            "doctor_override": False,
 
-            "status":
-                "waiting",
+            "second_looks": 0,
 
-            "override_log":
-                []
+            "rescue_required": False,
         }
 
-        # Add patient to queue
-        patient_queue.append(patient)
+        patients.append(
+            patient
+        )
 
-        # Store status
-        patient_statuses[
-            patient_id
-        ] = "waiting"
+        sort_patients()
 
         return jsonify({
-
             **result,
-
-            "patient_id":
-                patient_id,
-
-            "queue_number":
-                patient["queue_number"]
-
+            "token": token,
         }), 200
 
     except Exception as error:
@@ -330,381 +365,368 @@ def triage():
         )
 
         return jsonify({
-            "detail": str(error)
+            "detail": "Internal server error"
         }), 500
 
 
-# =========================================================
-# GET DOCTOR QUEUE
-# =========================================================
+# ============================================================
+# PATIENT QUEUE
+# ============================================================
 
 @app.route(
-    "/api/queue",
+    "/api/patients",
     methods=["GET"]
 )
-def get_queue():
+def get_patients():
 
-    priority_order = {
-
-        "EMERGENCY": 0,
-
-        "URGENT": 1,
-
-        "ROUTINE": 2
-    }
-
-    sorted_queue = sorted(
-
-        patient_queue,
-
-        key=lambda patient: (
-
-            priority_order.get(
-                patient["priority"],
-                3
-            ),
-
-            patient["created_at"]
-        )
-    )
-
-    # Make sure latest status is included
-    for patient in sorted_queue:
-
-        patient["status"] = patient_statuses.get(
-            patient["id"],
-            "waiting"
-        )
+    sort_patients()
 
     return jsonify({
-
-        "patients":
-            sorted_queue,
-
-        "total":
-            len(sorted_queue)
-
-    })
+        "patients": patients
+    }), 200
 
 
-# =========================================================
-# GET SINGLE PATIENT
-# =========================================================
+# ============================================================
+# GET ONE PATIENT
+# ============================================================
 
 @app.route(
-    "/api/queue/<patient_id>",
+    "/api/patients/<patient_id>",
     methods=["GET"]
 )
 def get_patient(patient_id):
 
-    for patient in patient_queue:
+    sort_patients()
 
-        if patient["id"] == patient_id:
+    patient = next(
+        (
+            p for p in patients
+            if p["id"] == patient_id
+        ),
+        None
+    )
 
-            patient["status"] = patient_statuses.get(
-                patient_id,
-                "waiting"
-            )
-
-            return jsonify(patient), 200
+    if not patient:
+        return jsonify({
+            "detail": "Patient not found"
+        }), 404
 
     return jsonify({
-        "detail": "Patient not found"
-    }), 404
+        "patient": patient
+    }), 200
 
 
-# =========================================================
+# ============================================================
 # DOCTOR PRIORITY OVERRIDE
-# =========================================================
+# ============================================================
 
 @app.route(
-    "/api/queue/<patient_id>/override",
-    methods=["PATCH"]
+    "/api/patients/<patient_id>/priority",
+    methods=["PUT"]
 )
-def override_priority(patient_id):
+def update_priority(patient_id):
 
-    data = request.get_json(
-        silent=True
-    ) or {}
+    data = request.get_json() or {}
 
-    new_priority = data.get(
+    priority = data.get(
         "priority"
     )
 
-    doctor = data.get(
-        "doctor",
-        "Doctor"
+    reason = data.get(
+        "reason",
+        "Doctor manually adjusted priority."
     )
 
-    valid_priorities = [
-        "EMERGENCY",
-        "URGENT",
-        "ROUTINE"
-    ]
-
-    if new_priority not in valid_priorities:
-
+    if priority not in PRIORITY_ORDER:
         return jsonify({
-
-            "detail":
-                "Invalid priority",
-
-            "allowed":
-                valid_priorities
-
+            "detail": "Invalid priority"
         }), 400
 
-    for patient in patient_queue:
+    patient = next(
+        (
+            p for p in patients
+            if p["id"] == patient_id
+        ),
+        None
+    )
 
-        if patient["id"] == patient_id:
+    if not patient:
+        return jsonify({
+            "detail": "Patient not found"
+        }), 404
 
-            old_priority = (
-                patient["priority"]
-            )
+    patient["priority"] = priority
 
-            patient["priority"] = (
-                new_priority
-            )
+    patient["doctor_override"] = True
 
-            patient["override_log"].append({
+    patient["override_reason"] = reason
 
-                "doctor":
-                    doctor,
+    patient["override_at"] = (
+        datetime.now().isoformat()
+    )
 
-                "from":
-                    old_priority,
-
-                "to":
-                    new_priority,
-
-                "timestamp":
-                    datetime.now().isoformat()
-            })
-
-            return jsonify({
-
-                "message":
-                    "Priority updated",
-
-                "patient":
-                    patient
-
-            }), 200
+    sort_patients()
 
     return jsonify({
-        "detail": "Patient not found"
-    }), 404
+        "patient": patient
+    }), 200
 
 
-# =========================================================
-# QUEUE STATISTICS
-# =========================================================
-
-@app.route(
-    "/api/queue/stats",
-    methods=["GET"]
-)
-def queue_stats():
-
-    emergency = sum(
-
-        1 for patient
-        in patient_queue
-
-        if patient["priority"]
-        == "EMERGENCY"
-    )
-
-    urgent = sum(
-
-        1 for patient
-        in patient_queue
-
-        if patient["priority"]
-        == "URGENT"
-    )
-
-    routine = sum(
-
-        1 for patient
-        in patient_queue
-
-        if patient["priority"]
-        == "ROUTINE"
-    )
-
-    waiting = sum(
-
-        1 for patient
-        in patient_queue
-
-        if patient_statuses.get(
-            patient["id"],
-            "waiting"
-        ) == "waiting"
-    )
-
-    in_consultation = sum(
-
-        1 for patient
-        in patient_queue
-
-        if patient_statuses.get(
-            patient["id"],
-            "waiting"
-        ) == "in_consultation"
-    )
-
-    completed = sum(
-
-        1 for patient
-        in patient_queue
-
-        if patient_statuses.get(
-            patient["id"],
-            "waiting"
-        ) == "completed"
-    )
-
-    return jsonify({
-
-        "total":
-            len(patient_queue),
-
-        "emergency":
-            emergency,
-
-        "urgent":
-            urgent,
-
-        "routine":
-            routine,
-
-        "waiting":
-            waiting,
-
-        "in_consultation":
-            in_consultation,
-
-        "completed":
-            completed
-
-    })
-
-
-# =========================================================
-# UPDATE PATIENT STATUS
-# =========================================================
+# ============================================================
+# PATIENT JOURNEY STATUS
+# ============================================================
 
 @app.route(
-    "/api/queue/<patient_id>/status",
-    methods=["PATCH"]
+    "/api/patients/<patient_id>/status",
+    methods=["PUT"]
 )
-def update_patient_status(patient_id):
+def update_status(patient_id):
 
-    data = request.get_json(
-        silent=True
-    ) or {}
+    data = request.get_json() or {}
 
     status = data.get(
         "status"
     )
 
     allowed_statuses = [
-
-        "waiting",
-
-        "called",
-
-        "in_consultation",
-
-        "completed"
+        "WAITING",
+        "IN_REVIEW",
+        "TREATMENT",
+        "FOLLOW_UP",
+        "RECOVERED",
     ]
 
     if status not in allowed_statuses:
-
         return jsonify({
-
-            "error":
-                "Invalid status",
-
-            "allowed_statuses":
-                allowed_statuses
-
+            "detail": "Invalid status"
         }), 400
 
-    # Check patient exists
-    patient_exists = any(
-
-        patient["id"] == patient_id
-
-        for patient in patient_queue
+    patient = next(
+        (
+            p for p in patients
+            if p["id"] == patient_id
+        ),
+        None
     )
 
-    if not patient_exists:
-
+    if not patient:
         return jsonify({
-
-            "error":
-                "Patient not found"
-
+            "detail": "Patient not found"
         }), 404
 
-    # Update status
-    patient_statuses[
-        patient_id
-    ] = status
+    patient["status"] = status
+
+    if status == "RECOVERED":
+        patient["recovered_at"] = (
+            datetime.now().isoformat()
+        )
+
+    sort_patients()
 
     return jsonify({
-
-        "success":
-            True,
-
-        "patient_id":
-            patient_id,
-
-        "status":
-            status
-
+        "patient": patient
     }), 200
 
 
-# =========================================================
-# RESET QUEUE
-# =========================================================
+# ============================================================
+# SECOND LOOK
+# ============================================================
 
 @app.route(
-    "/api/queue/reset",
+    "/api/patients/<patient_id>/second-look",
     methods=["POST"]
 )
-def reset_queue():
+def second_look(patient_id):
 
-    patient_queue.clear()
+    patient = next(
+        (
+            p for p in patients
+            if p["id"] == patient_id
+        ),
+        None
+    )
 
-    patient_statuses.clear()
+    if not patient:
+        return jsonify({
+            "detail": "Patient not found"
+        }), 404
+
+    patient["second_looks"] += 1
+
+    patient["last_second_look"] = (
+        datetime.now().isoformat()
+    )
+
+    # --------------------------------------------------------
+    # Recalculate based on original answers.
+    # In a future version this can receive NEW symptoms.
+    # --------------------------------------------------------
+
+    result = calculate_triage(
+        patient["symptoms"],
+        patient["answers"]
+    )
+
+    old_priority = patient["priority"]
+
+    # Never silently downgrade a doctor override.
+    if not patient["doctor_override"]:
+        patient["priority"] = result[
+            "priority"
+        ]
+
+        patient["risk_score"] = result[
+            "risk_score"
+        ]
+
+        patient["factors"] = result[
+            "factors"
+        ]
+
+        patient["reason"] = result[
+            "reason"
+        ]
+
+    sort_patients()
 
     return jsonify({
-
-        "success":
-            True,
-
-        "message":
-            "Queue reset successfully"
-
+        "message": (
+            "Second-look assessment completed. "
+            f"Previous priority: {old_priority}. "
+            f"Current priority: {patient['priority']}."
+        ),
+        "patient": patient,
     }), 200
 
 
-# =========================================================
-# RUN SERVER
-# =========================================================
+# ============================================================
+# ANALYTICS
+# ============================================================
+
+@app.route(
+    "/api/analytics",
+    methods=["GET"]
+)
+def analytics():
+
+    sort_patients()
+
+    total = len(patients)
+
+    emergency = sum(
+        1
+        for p in patients
+        if p["priority"] == "EMERGENCY"
+    )
+
+    urgent = sum(
+        1
+        for p in patients
+        if p["priority"] == "URGENT"
+    )
+
+    routine = sum(
+        1
+        for p in patients
+        if p["priority"] == "ROUTINE"
+    )
+
+    rescue_cases = sum(
+        1
+        for p in patients
+        if p["rescue_required"]
+    )
+
+    second_looks = sum(
+        p.get(
+            "second_looks",
+            0
+        )
+        for p in patients
+    )
+
+    recovered = sum(
+        1
+        for p in patients
+        if p["status"] == "RECOVERED"
+    )
+
+    average_wait = 0
+
+    if total:
+        average_wait = round(
+            sum(
+                p["wait_minutes"]
+                for p in patients
+            ) / total,
+            1
+        )
+
+    statuses = {
+        "WAITING": 0,
+        "IN_REVIEW": 0,
+        "TREATMENT": 0,
+        "FOLLOW_UP": 0,
+        "RECOVERED": 0,
+    }
+
+    for patient in patients:
+        status = patient.get(
+            "status",
+            "WAITING"
+        )
+
+        if status in statuses:
+            statuses[status] += 1
+
+    return jsonify({
+        "total_patients": total,
+
+        "emergency": emergency,
+
+        "urgent": urgent,
+
+        "routine": routine,
+
+        "average_wait": average_wait,
+
+        "rescue_cases": rescue_cases,
+
+        "second_looks": second_looks,
+
+        "recovered": recovered,
+
+        "statuses": statuses,
+    }), 200
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+@app.route(
+    "/",
+    methods=["GET"]
+)
+def home():
+
+    return jsonify({
+        "status": "LifeLine backend running",
+
+        "service": "Safe AI Triage",
+
+        "patients": len(patients),
+    })
+
+
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
 
     app.run(
-
         host="0.0.0.0",
-
         port=5000,
-
         debug=True
     )
